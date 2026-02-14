@@ -1,15 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:camera/camera.dart';
+
 import 'screens/home_screen.dart';
 import 'screens/camera_screen.dart';
 import 'screens/wardrobe_screen.dart';
 import 'widgets/glass_nav_bar.dart';
 import 'theme/app_theme.dart';
 
+late final List<CameraDescription> cameras;
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // System UI styling
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       systemNavigationBarColor: Color(0xFFFDFCF9),
@@ -19,9 +23,11 @@ void main() {
     ),
   );
 
+  // Load cameras once
+  cameras = await availableCameras();
+
   runApp(const AIWardrobeApp());
 }
-
 
 class AIWardrobeApp extends StatelessWidget {
   const AIWardrobeApp({super.key});
@@ -46,10 +52,11 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = const [
-    HomeScreen(),
-    CameraScreen(),
-    WardrobeScreen(),
+  // NOT const anymore because we inject cameras into CameraScreen
+  late final List<Widget> _screens = [
+    const HomeScreen(),
+    CameraScreen(cameras: cameras),
+    const WardrobeScreen(),
   ];
 
   @override
@@ -60,9 +67,7 @@ class _MainNavigationState extends State<MainNavigation> {
       bottomNavigationBar: GlassNavBar(
         currentIndex: _currentIndex,
         onTap: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
+          setState(() => _currentIndex = index);
         },
       ),
     );
