@@ -149,6 +149,66 @@ def _garment_doc_to_payload(d: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _normalize_meta(meta: Any) -> Dict[str, Any]:
+    """
+    Defensive normalization: ensure meta is always a dict.
+
+    Handles common bad shapes:
+      - list[dict]  -> first dict
+      - list[...]   -> {}
+      - str (json)  -> parsed dict if possible, else {}
+      - None/other  -> {}
+    """
+    if meta is None:
+        return {}
+
+    if isinstance(meta, dict):
+        return meta
+
+    if isinstance(meta, list):
+        # If it's a list of dicts, use the first dict. Otherwise drop.
+        if meta and isinstance(meta[0], dict):
+            return meta[0]
+        return {}
+
+    if isinstance(meta, str):
+        s = meta.strip()
+        if not s:
+            return {}
+        # Some models accidentally return JSON as text.
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            return {}
+        return _normalize_meta(parsed)
+
+    # Anything else: not usable
+    return {}
+
+
+def _normalize_colors(raw: Any) -> List[str]:
+    """
+    Ensure colors is a list[str] with non-empty strings.
+    Accepts:
+      - list[Any]
+      - str (single color or comma-separated list)
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        # allow "blue, white" style
+        parts = [p.strip() for p in raw.split(",")]
+        return [p for p in parts if p]
+    if isinstance(raw, list):
+        out: List[str] = []
+        for c in raw:
+            s = str(c).strip()
+            if s:
+                out.append(s)
+        return out
+    return []
+
+
 # -------------------------
 # Gemini stage (optional)
 # -------------------------
@@ -231,7 +291,10 @@ class GeminiClient:
             return {}
 
         try:
-            return json.loads(text)
+            # Normal case: Gemini returns JSON object
+            parsed = json.loads(text)
+            # But be defensive anyway
+            return _normalize_meta(parsed)
         except Exception:
             return {}
 
@@ -263,19 +326,18 @@ class WardrobeService:
         full_img = _decode_image(image_bytes)
         jpeg = _encode_jpeg(full_img)
 
-        meta: Dict[str, Any] = {}
+        meta_any: Any = {}
         try:
-            meta = await self._gemini.describe_garment_json(jpeg, prompt)
+            meta_any = await self._gemini.describe_garment_json(jpeg, prompt)
         except Exception:
-            meta = {}
+            meta_any = {}
+
+        meta: Dict[str, Any] = _normalize_meta(meta_any)
 
         cat = _coerce_category(meta.get("category"))
         type_str = str(meta.get("type") or "").strip() or "unknown garment"
 
-        colors = meta.get("colors", [])
-        if not isinstance(colors, list):
-            colors = []
-        colors = [str(c).strip() for c in colors if str(c).strip()]
+        colors = _normalize_colors(meta.get("colors"))
 
         material = meta.get("material")
         pattern = meta.get("pattern")
@@ -296,9 +358,10 @@ class WardrobeService:
         image_url = f"{base_url}/wardrobe/media/{image_file_id}"
         thumb_url = f"{base_url}/wardrobe/media/{thumb_file_id}"
 
+        # meta is already a dict, so this is safe
         extra = {
             k: v
-            for k, v in dict(meta).items()
+            for k, v in meta.items()
             if k not in {"category", "type", "colors", "material", "pattern", "season", "fit"}
         }
 
