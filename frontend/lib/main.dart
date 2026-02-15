@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'data/wardrobe_store.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/camera_screen.dart';
@@ -10,21 +12,37 @@ import 'theme/app_theme.dart';
 
 late final List<CameraDescription> cameras;
 
+const Color kAppBg = Color(0xFFFDFCF9);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // System UI styling
+  SystemChrome.setEnabledSystemUIMode(
+    SystemUiMode.manual,
+    overlays: SystemUiOverlay.values,
+  );
+
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
-      systemNavigationBarColor: Color(0xFFFDFCF9),
-      systemNavigationBarIconBrightness: Brightness.dark,
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.dark,
+
+      systemNavigationBarColor: kAppBg,
+      systemNavigationBarIconBrightness: Brightness.dark,
+      systemNavigationBarDividerColor: kAppBg,
+
+      // Some devices apply auto-contrast/tint. This helps keep it looking “normal”.
+      systemNavigationBarContrastEnforced: true,
     ),
   );
 
-  // Load cameras once
+  WidgetsFlutterBinding.ensureInitialized();
   cameras = await availableCameras();
+
+  await Hive.initFlutter();
+  await WardrobeStore.init();
+  await WardrobeStore.seedIfNeeded();
+
 
   runApp(const AIWardrobeApp());
 }
@@ -52,7 +70,6 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  // NOT const anymore because we inject cameras into CameraScreen
   late final List<Widget> _screens = [
     const HomeScreen(),
     CameraScreen(cameras: cameras),
@@ -64,11 +81,13 @@ class _MainNavigationState extends State<MainNavigation> {
     return Scaffold(
       body: _screens[_currentIndex],
       extendBody: true,
-      bottomNavigationBar: GlassNavBar(
-        currentIndex: _currentIndex,
-        onTap: (index) {
-          setState(() => _currentIndex = index);
-        },
+
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: GlassNavBar(
+          currentIndex: _currentIndex,
+          onTap: (index) => setState(() => _currentIndex = index),
+        ),
       ),
     );
   }

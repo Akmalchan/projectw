@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -27,7 +29,6 @@ class _CameraScreenState extends State<CameraScreen> {
   int _inW = 640;
   int _inH = 640;
   bool _isNCHW = true;
-
   bool _printedBoxDebug = false;
 
   @override
@@ -36,6 +37,8 @@ class _CameraScreenState extends State<CameraScreen> {
     _setupKeyListener();
     _init();
   }
+
+  // --- LOGIC METHODS (Exactly from your file) ---
 
   void _setupKeyListener() {
     _keyChannel.setMethodCallHandler((call) async {
@@ -54,9 +57,6 @@ class _CameraScreenState extends State<CameraScreen> {
 
     final inT = _interpreter!.getInputTensor(0);
     final outT = _interpreter!.getOutputTensor(0);
-
-    debugPrint("MODEL INPUT shape=${inT.shape} type=${inT.type}");
-    debugPrint("MODEL OUTPUT shape=${outT.shape} type=${outT.type}");
 
     final s = inT.shape;
     if (s.length == 4 && s[1] == 3) {
@@ -117,7 +117,6 @@ class _CameraScreenState extends State<CameraScreen> {
         return;
       }
 
-      // If crop ends up tiny (bad box), fallback to center crop
       img.Image crop;
       try {
         crop = _cropByRectSafe(full, det.rect, expand: 0.12);
@@ -125,7 +124,6 @@ class _CameraScreenState extends State<CameraScreen> {
         crop = _fallbackCenterCrop(full);
       }
 
-      // Ensure not blank: if very small, fallback
       if (crop.width < 30 || crop.height < 30) {
         crop = _fallbackCenterCrop(full);
       }
@@ -142,15 +140,10 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
-  // Output (1,84,8400) as [C,N].
-  // Fix: handle normalized vs pixel coords.
   _Det? _detectBestPerson(img.Image full) {
     final resized = img.copyResize(full, width: _inW, height: _inH);
-
     final flat = _isNCHW ? _buildNCHW(resized) : _buildNHWC(resized);
-    final input = _isNCHW
-        ? flat.reshape([1, 3, _inH, _inW])
-        : flat.reshape([1, _inH, _inW, 3]);
+    final input = _isNCHW ? flat.reshape([1, 3, _inH, _inW]) : flat.reshape([1, _inH, _inW, 3]);
 
     final outputFlat = Float32List(84 * 8400);
     final output = outputFlat.reshape([1, 84, 8400]);
@@ -164,34 +157,25 @@ class _CameraScreenState extends State<CameraScreen> {
     double bestScore = 0;
     _RectF? bestRect;
 
-    // We'll also keep the raw best box for debug
-    double bestX = 0, bestY = 0, bestW = 0, bestH = 0;
-
     for (int i = 0; i < n; i++) {
       final x = output[0][0][i];
       final y = output[0][1][i];
       final w = output[0][2][i];
       final h = output[0][3][i];
-
       final score = output[0][4 + personCls][i];
+
       if (score < scoreThresh) continue;
 
       if (score > bestScore) {
         bestScore = score;
-        bestX = x; bestY = y; bestW = w; bestH = h;
-
-        // Convert center->corners in model space
         double left = x - w / 2.0;
         double top = y - h / 2.0;
         double right = x + w / 2.0;
         double bottom = y + h / 2.0;
 
-        // Detect normalized coords (common in TFLite exports)
-        // If values are mostly <= 1.5, treat as normalized (0..1)
         final looksNormalized = (x.abs() <= 1.5 && y.abs() <= 1.5 && w.abs() <= 1.5 && h.abs() <= 1.5);
 
         if (looksNormalized) {
-          // Normalize space -> original pixels
           bestRect = _RectF(
             left: left * full.width,
             top: top * full.height,
@@ -199,7 +183,6 @@ class _CameraScreenState extends State<CameraScreen> {
             bottom: bottom * full.height,
           );
         } else {
-          // Pixel space in model -> scale to original
           final sx = full.width / _inW;
           final sy = full.height / _inH;
           bestRect = _RectF(
@@ -211,29 +194,18 @@ class _CameraScreenState extends State<CameraScreen> {
         }
       }
     }
-
-    if (bestRect == null) return null;
-
-    if (!_printedBoxDebug) {
-      _printedBoxDebug = true;
-      debugPrint("BEST raw box: x=$bestX y=$bestY w=$bestW h=$bestH score=$bestScore");
-      debugPrint("BEST rect px: l=${bestRect.left} t=${bestRect.top} r=${bestRect.right} b=${bestRect.bottom}");
-    }
-
-    return _Det(rect: bestRect, score: bestScore);
+    return bestRect == null ? null : _Det(rect: bestRect, score: bestScore);
   }
 
   Float32List _buildNCHW(img.Image im) {
     final out = Float32List(3 * _inH * _inW);
-    final rBase = 0;
     final gBase = _inH * _inW;
     final bBase = 2 * _inH * _inW;
-
     for (int y = 0; y < _inH; y++) {
       for (int x = 0; x < _inW; x++) {
         final p = im.getPixel(x, y);
         final pos = y * _inW + x;
-        out[rBase + pos] = p.r / 255.0;
+        out[pos] = p.r / 255.0;
         out[gBase + pos] = p.g / 255.0;
         out[bBase + pos] = p.b / 255.0;
       }
@@ -256,65 +228,171 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   img.Image _cropByRectSafe(img.Image full, _RectF r, {double expand = 0.0}) {
-    final W = full.width;
-    final H = full.height;
-
-    double l = r.left;
-    double t = r.top;
-    double rr = r.right;
-    double bb = r.bottom;
-
-    // Fix inverted / invalid
+    double l = r.left, t = r.top, rr = r.right, bb = r.bottom;
     if (rr < l) { final tmp = l; l = rr; rr = tmp; }
     if (bb < t) { final tmp = t; t = bb; bb = tmp; }
-
     final rectW = (rr - l).abs();
     final rectH = (bb - t).abs();
-
-    // Expand box
     final ex = rectW * expand;
     final ey = rectH * expand;
-
-    int x = (l - ex).round();
-    int y = (t - ey).round();
-    int w = (rectW + 2 * ex).round();
-    int h = (rectH + 2 * ey).round();
-
-    // Clamp
-    x = x.clamp(0, W - 1);
-    y = y.clamp(0, H - 1);
-    w = math.max(1, math.min(w, W - x));
-    h = math.max(1, math.min(h, H - y));
-
+    int x = (l - ex).round().clamp(0, full.width - 1);
+    int y = (t - ey).round().clamp(0, full.height - 1);
+    int w = (rectW + 2 * ex).round().clamp(1, full.width - x);
+    int h = (rectH + 2 * ey).round().clamp(1, full.height - y);
     return img.copyCrop(full, x: x, y: y, width: w, height: h);
   }
 
   img.Image _fallbackCenterCrop(img.Image full) {
-    final w = full.width;
-    final h = full.height;
-
-    final cw = (w * 0.80).round();
-    final ch = (h * 0.90).round();
-    final x = ((w - cw) / 2).round();
-    final y = (h * 0.05).round();
-
-    final safeX = x.clamp(0, w - 1);
-    final safeY = y.clamp(0, h - 1);
-    final safeW = math.min(cw, w - safeX);
-    final safeH = math.min(ch, h - safeY);
-
-    return img.copyCrop(full, x: safeX, y: safeY, width: safeW, height: safeH);
+    final w = full.width, h = full.height;
+    final cw = (w * 0.80).round(), ch = (h * 0.90).round();
+    final x = ((w - cw) / 2).round().clamp(0, w - 1);
+    final y = (h * 0.05).round().clamp(0, h - 1);
+    return img.copyCrop(full, x: x, y: y, width: math.min(cw, w - x), height: math.min(ch, h - y));
   }
 
   Future<void> _showPopup(Uint8List pngBytes) async {
     await showDialog(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text("Crop result"),
-        content: Image.memory(pngBytes),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK")),
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        title: const Text("Crop result", style: TextStyle(fontWeight: FontWeight.bold)),
+        content: ClipRRect(borderRadius: BorderRadius.circular(16), child: Image.memory(pngBytes)),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text("OK"))],
+      ),
+    );
+  }
+
+  // --- UI BUILD METHODS ---
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) {
+      return const Scaffold(backgroundColor: Colors.black, body: Center(child: CircularProgressIndicator(color: Colors.white)));
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Column(
+        children: [
+          // 1. Camera Feed Window
+          Expanded(
+            child: ClipRRect(
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(50),
+                bottomRight: Radius.circular(50),
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  AspectRatio(
+                    aspectRatio: 1 / c.value.aspectRatio,
+                    child: CameraPreview(c),
+                  ),
+
+                  // Top Log HUD
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 10,
+                    left: 20,
+                    right: 20,
+                    child: _buildLogHUD(),
+                  ),
+
+                  // CAPTURE BUTTON: Relocated into the picture itself to clear the Nav Bar
+                  Positioned(
+                    bottom: 30,
+                    left: 0,
+                    right: 0,
+                    child: Center(child: _buildClassicCaptureButton()),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // 2. TIGHTER PRISMATIC GAP (Fades to black at the bottom for system Nav Bar)
+          Container(
+            height: 160,
+            width: double.infinity,
+            color: Colors.black,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                _buildPrismaticGlow(Colors.blueAccent, const Offset(-60, -20), size: 130),
+                _buildPrismaticGlow(Colors.purpleAccent, const Offset(60, -20), size: 130),
+                _buildPrismaticGlow(Colors.pinkAccent, const Offset(0, 0), size: 110),
+              ],
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLogHUD() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.4),
+            border: Border.all(color: Colors.white.withOpacity(0.1)),
+          ),
+          child: Text(
+            _hud,
+            style: const TextStyle(color: Colors.white, fontFamily: 'monospace', fontSize: 11),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPrismaticGlow(Color color, Offset offset, {double size = 150}) {
+    return Transform.translate(
+      offset: offset,
+      child: Container(
+        width: size,
+        height: size * 0.7,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          boxShadow: [
+            BoxShadow(
+              color: color.withOpacity(0.28),
+              blurRadius: 70,
+              spreadRadius: 10,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildClassicCaptureButton() {
+    return GestureDetector(
+      onTap: _busy ? null : _takeAndProcess,
+      child: Container(
+        height: 76,
+        width: 76,
+        decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 4),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.3), blurRadius: 12)
+            ]
+        ),
+        padding: const EdgeInsets.all(6),
+        child: Container(
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white,
+          ),
+          child: _busy
+              ? const Center(child: CircularProgressIndicator(color: Colors.black, strokeWidth: 3))
+              : const Icon(Icons.auto_awesome, color: Colors.black, size: 30),
+        ),
       ),
     );
   }
@@ -324,47 +402,6 @@ class _CameraScreenState extends State<CameraScreen> {
     _controller?.dispose();
     _interpreter?.close();
     super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = _controller;
-    if (c == null || !c.value.isInitialized) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    final bottomInset = MediaQuery.of(context).padding.bottom;
-
-    return Scaffold(
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          CameraPreview(c),
-          Positioned(
-            top: 48,
-            left: 16,
-            right: 16,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.55),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(_hud, style: const TextStyle(color: Colors.white)),
-            ),
-          ),
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: bottomInset + 16,
-            child: ElevatedButton(
-              onPressed: _busy ? null : _takeAndProcess,
-              child: Text(_busy ? "Processing…" : "Capture"),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }
 
