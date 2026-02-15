@@ -1,0 +1,49 @@
+services:
+  # Public API (FastAPI)
+  - type: web
+    name: projectw-backend
+    env: docker
+    plan: starter
+    rootDir: backend
+    dockerfilePath: Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # === Internal connectivity (Render private network hostnames) ===
+      - key: SFHACKS_MONGO_URI
+        value: mongodb://projectw-mongo:27017
+      - key: SFHACKS_VECTOR_HOST
+        value: projectw-vectoraidb:50051
+
+      # === Gemini ===
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_IMAGE_MODEL
+        value: gemini-2.5-flash-image
+
+      # Must match your embeddings dimension
+      - key: SFHACKS_VECTOR_DIM
+        value: "768"
+
+  # MongoDB (private)
+  - type: pserv
+    name: projectw-mongo
+    env: docker
+    plan: starter
+    image:
+      url: mongo:7
+    dockerCommand: "mongod --bind_ip_all"
+    disk:
+      name: mongo-data
+      mountPath: /data/db
+      sizeGB: 10
+
+  # VectorAI DB (private)
+  - type: pserv
+    name: projectw-vectoraidb
+    env: docker
+    plan: starter
+    image:
+      url: williamimoh/actian-vectorai-db:1.0b
