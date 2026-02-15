@@ -1,11 +1,14 @@
-version: "3.8"
-
 services:
   vectoraidb:
     image: williamimoh/actian-vectorai-db:1.0b
+    restart: unless-stopped
     ports:
       - "50051:50051"
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -lc 'echo > /dev/tcp/127.0.0.1/50051'"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
 
   mongo:
     image: mongo:7
@@ -14,19 +17,26 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
 
   backend:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     env_file:
       - .env
     depends_on:
-      - mongo
-      - vectoraidb
+      mongo:
+        condition: service_healthy
+      vectoraidb:
+        condition: service_healthy
     ports:
       - "8000:8000"
-    restart: unless-stopped
 
 volumes:
   mongo_data:

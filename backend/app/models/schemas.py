@@ -1,36 +1,41 @@
 from __future__ import annotations
-from pydantic import BaseModel, Field
-from typing import Optional, List, Literal, Dict, Any
 
-class CropMeta(BaseModel):
-    bodyPart: str = Field(..., description="e.g. top/bottom/shoes")
-    garmentType: str = Field(..., description="e.g. jacket/tshirt/jeans")
-    name: Optional[str] = None
-    description: Optional[str] = None
-    tags: Optional[List[str]] = None
+from pydantic import BaseModel, Field, constr
+from typing import Optional, List, Literal
 
-class IngestResult(BaseModel):
-    garmentId: str
-    vectorPointId: int
-    bodyPart: str
-    garmentType: str
+Category = Literal[
+    "all", "tshirts", "pants", "outerwear", "shoes", "accessories", "unknown"
+]
 
-class GarmentOut(BaseModel):
-    id: str
-    userId: str
-    bodyPart: str
-    garmentType: str
-    name: Optional[str] = None
-    description: Optional[str] = None
-    tags: List[str] = []
-    image: Dict[str, Any]
-    embedding: Dict[str, Any]
-    createdAt: str
+HexColor = constr(
+    pattern=r"^#[0-9A-Fa-f]{6}$",
+    strict=True,
+)
 
-class SearchHit(BaseModel):
-    garment: GarmentOut
-    score: float
+SafeLabel = constr(
+    min_length=1,
+    max_length=80,
+    strict=True,
+)
 
-class SearchResponse(BaseModel):
-    query: str
-    hits: List[SearchHit]
+ImageBase64 = constr(
+    min_length=1,
+    max_length=8_000_000,
+    strict=True,
+)
+
+class WardrobeItemOut(BaseModel):
+    id: Optional[str] = None
+    label: SafeLabel = Field(..., description="Human-friendly label")
+    category: Category = Field(..., description="Normalized category enum")
+    dominantColorHex: HexColor = Field(..., description="Format: #RRGGBB")
+    imageBase64: ImageBase64 = Field(..., description="Base64-encoded PNG/JPG bytes")
+
+class WardrobeItemsResponse(BaseModel):
+    items: List[WardrobeItemOut]
+
+class WardrobeIngestItemResult(BaseModel):
+    id: str = Field(..., description="Mongo item id")
+
+class WardrobeIngestItemsResponse(BaseModel):
+    items: List[WardrobeIngestItemResult]

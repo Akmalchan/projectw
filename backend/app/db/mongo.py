@@ -17,7 +17,7 @@ def get_gridfs() -> GridFS:
     return GridFS(get_db())
 
 def garments_collection():
-    return get_db()["garments"]
+    return get_db()["wardrobe_items"]
 
 def counters_collection():
     return get_db()["counters"]

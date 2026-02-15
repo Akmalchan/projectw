@@ -1,144 +1,148 @@
 from __future__ import annotations
-from fastapi import APIRouter, File, Form, UploadFile, HTTPException
-from fastapi.responses import Response
-from typing import Optional, List
-from bson import ObjectId
 
-from app.services.wardrobe import create_garment_from_crop, get_garment, search_wardrobe
+import base64
+import io
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from PIL import Image
+
+from app.models.schemas import (
+    WardrobeItemOut,
+    WardrobeItemsResponse,
+    WardrobeIngestItemResult,
+    WardrobeIngestItemsResponse,
+)
+from app.core.security import validate_user_id, validate_image_bytes
 from app.services.storage import read_image_bytes
-from app.models.schemas import IngestResult, GarmentOut, SearchResponse, SearchHit
+from app.services.wardrobe import CreateItemInput, create_item, list_items, search_items
 
 router = APIRouter(prefix="/wardrobe", tags=["wardrobe"])
 
-@router.post("/ingest-crops", response_model=List[IngestResult])
-async def ingest_crops(
-    userId: str = Form(...),
-    bodyPart: List[str] = Form(...),
-    garmentType: List[str] = Form(...),
-    files: List[UploadFile] = File(...),
-    name: Optional[List[str]] = Form(None),
-    description: Optional[List[str]] = Form(None),
-    tags: Optional[List[str]] = Form(None),
-):
-    """Upload one or more cropped garment images.
 
-Form-data fields:
-- userId: string
-- bodyPart: repeated (same count as files)
-- garmentType: repeated (same count as files)
-- files: repeated image files
-- name/description: optional repeated, or omit
-- tags: optional CSV or repeated; for starter we accept a single comma-separated string in the first element
+def _bytes_to_base64_image(img_bytes: bytes, *, max_out_bytes: int = 800_000) -> str:
+    if len(img_bytes) <= max_out_bytes:
+        return base64.b64encode(img_bytes).decode("ascii")
 
-Example (curl):
-```bash
-curl -X POST http://localhost:8000/wardrobe/ingest-crops \
-  -F userId=u123 \
-  -F bodyPart=top -F garmentType=jacket -F files=@crop1.png \
-  -F bodyPart=bottom -F garmentType=jeans -F files=@crop2.png
-```
-"""
-    if len(files) != len(bodyPart) or len(files) != len(garmentType):
-        raise HTTPException(status_code=400, detail="files/bodyPart/garmentType counts must match")
-
-    # Parse tags: allow tags=["a,b,c"] style
-    parsed_tags: Optional[List[str]] = None
-    if tags:
-        if len(tags) == 1 and "," in tags[0]:
-            parsed_tags = [t.strip() for t in tags[0].split(",") if t.strip()]
-        else:
-            parsed_tags = tags
-
-    results: List[IngestResult] = []
-    for i, f in enumerate(files):
-        data = await f.read()
-        n = name[i] if name and i < len(name) else None
-        d = description[i] if description and i < len(description) else None
-
-        garment_id, point_id = create_garment_from_crop(
-            user_id=userId,
-            crop_bytes=data,
-            filename=f.filename or f"crop_{i}.bin",
-            content_type=f.content_type or "application/octet-stream",
-            body_part=bodyPart[i],
-            garment_type=garmentType[i],
-            name=n,
-            description=d,
-            tags=parsed_tags,
-        )
-        results.append(IngestResult(
-            garmentId=garment_id,
-            vectorPointId=point_id,
-            bodyPart=bodyPart[i],
-            garmentType=garmentType[i],
-        ))
-
-    return results
+    # bounded recompress
+    with Image.open(io.BytesIO(img_bytes)) as im:
+        im = im.convert("RGB")
+        im.thumbnail((1024, 1024))
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=85, optimize=True)
+        data = out.getvalue()
+        if len(data) > max_out_bytes:
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=70, optimize=True)
+            data = out.getvalue()
+        return base64.b64encode(data).decode("ascii")
 
 
-@router.get("/garments/{garment_id}", response_model=GarmentOut)
-def get_garment_meta(garment_id: str):
-    try:
-        doc = get_garment(garment_id)
-        return GarmentOut(
-            id=doc["id"],
-            userId=doc["userId"],
-            bodyPart=doc["bodyPart"],
-            garmentType=doc["garmentType"],
-            name=doc.get("name"),
-            description=doc.get("description"),
-            tags=doc.get("tags", []),
-            image=doc.get("image", {}),
-            embedding=doc.get("embedding", {}),
-            createdAt=doc.get("createdAt", ""),
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Garment not found")
+def _doc_to_item(doc: Dict[str, Any]) -> WardrobeItemOut:
+    image = doc.get("image") or {}
+    file_id = image.get("fileId")
+    if not file_id:
+        raise HTTPException(status_code=500, detail="Item missing image.fileId")
 
-
-@router.get("/garments/{garment_id}/image")
-def get_garment_image(garment_id: str):
-    try:
-        doc = get_garment(garment_id)
-        file_id = doc.get("image", {}).get("fileId")
-        if not file_id:
-            raise HTTPException(status_code=404, detail="No image for garment")
-        data, content_type = read_image_bytes(ObjectId(file_id))
-        return Response(content=data, media_type=content_type)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Garment not found")
-
-
-@router.get("/search", response_model=SearchResponse)
-def search(
-    userId: str,
-    q: str,
-    bodyPart: Optional[str] = None,
-    garmentType: Optional[str] = None,
-    limit: int = 10,
-):
-    hits = search_wardrobe(
-        user_id=userId,
-        query=q,
-        body_part=bodyPart,
-        garment_type=garmentType,
-        top_k=max(1, min(limit, 50)),
+    img_bytes, _ = read_image_bytes(str(file_id))
+    return WardrobeItemOut(
+        id=str(doc.get("id") or ""),
+        label=str(doc.get("label") or "item"),
+        category=str(doc.get("category") or "unknown"),
+        dominantColorHex=str(doc.get("dominantColorHex") or "#000000"),
+        imageBase64=_bytes_to_base64_image(img_bytes),
     )
 
-    out_hits: List[SearchHit] = []
-    for doc, score in hits:
-        garment = GarmentOut(
-            id=doc["id"],
-            userId=doc["userId"],
-            bodyPart=doc["bodyPart"],
-            garmentType=doc["garmentType"],
-            name=doc.get("name"),
-            description=doc.get("description"),
-            tags=doc.get("tags", []),
-            image=doc.get("image", {}),
-            embedding=doc.get("embedding", {}),
-            createdAt=doc.get("createdAt", ""),
-        )
-        out_hits.append(SearchHit(garment=garment, score=score))
 
-    return SearchResponse(query=q, hits=out_hits)
+@router.post("/ingest-crops", response_model=WardrobeIngestItemsResponse)
+async def ingest_crops(
+    userId: str = Form(...),
+    label: List[str] = Form(...),
+    category: List[str] = Form(...),
+    dominantColorHex: List[str] = Form(...),
+    files: List[UploadFile] = File(...),
+    geminiPrompt: Optional[str] = Form(None),
+):
+    try:
+        user_id = validate_user_id(userId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not (len(files) == len(label) == len(category) == len(dominantColorHex)):
+        raise HTTPException(status_code=400, detail="files/label/category/dominantColorHex must have same count")
+
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Too many files (max 20).")
+
+    created: List[WardrobeIngestItemResult] = []
+
+    for i, f in enumerate(files):
+        raw = await f.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="Empty file.")
+
+        try:
+            detected_mime = validate_image_bytes(raw, f.content_type)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        item_id = create_item(
+            inp=CreateItemInput(
+                user_id=user_id,
+                label=label[i],
+                category=category[i],
+                dominant_color_hex=dominantColorHex[i],
+                image_bytes=raw,
+                filename=f.filename or "crop",
+                content_type=detected_mime,
+                gemini_prompt=geminiPrompt,
+                gemini_raw=None,
+            )
+        )
+        created.append(WardrobeIngestItemResult(id=item_id))
+
+    return WardrobeIngestItemsResponse(items=created)
+
+
+@router.get("/items", response_model=WardrobeItemsResponse)
+def get_items(
+    userId: str = Query(...),
+    limit: int = Query(10, ge=1, le=50),
+):
+    try:
+        user_id = validate_user_id(userId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    docs = list_items(user_id=user_id, limit=limit)
+    items: List[WardrobeItemOut] = []
+    for d in docs:
+        try:
+            items.append(_doc_to_item(d))
+        except Exception:
+            continue
+
+    return WardrobeItemsResponse(items=items)
+
+
+@router.get("/search-items", response_model=WardrobeItemsResponse)
+def search_items_endpoint(
+    userId: str = Query(...),
+    q: str = Query(..., min_length=1, max_length=80),
+    category: Optional[str] = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+):
+    try:
+        user_id = validate_user_id(userId)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    docs = search_items(user_id=user_id, q=q, limit=limit, category=category)
+    items: List[WardrobeItemOut] = []
+    for d in docs:
+        try:
+            items.append(_doc_to_item(d))
+        except Exception:
+            continue
+
+    return WardrobeItemsResponse(items=items)
