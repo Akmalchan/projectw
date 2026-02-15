@@ -13,7 +13,7 @@ class WardrobeStore {
 
 
   static const _seedKey = "seed_version";
-  static const int seedVersion = 1;
+  static const int seedVersion = 4;
 
 
   static Future<void> init() async {
@@ -51,6 +51,29 @@ class WardrobeStore {
       ("assets/wardrobe/fake3.jpg", "Pajama set", "pants", "#5C6BC0"),
       ("assets/wardrobe/fake4.jpg", "Dildo", "outerwear", "#1E1E1E"),
       ("assets/wardrobe/fake5.jpg", "But Plug", "pants", "#5C6BC0"),
+
+
+      ("assets/wardrobe/coat1.jpg", "Black Overcoat", "outerwear", "#D32F2F"),
+      ("assets/wardrobe/coat2.jpg", "Khaki coat", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/jacket1.jpg", "Ferrari jacket", "outerwear", "#5C6BC0"),
+      ("assets/wardrobe/jacket2.jpg", "Leather Jacket", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/jacket3.jpg", "Utility Jacket", "outerwear", "#5C6BC0"),
+      ("assets/wardrobe/jacket4.jpg", "Polo Jacket", "outerwear", "#5C6BC0"),
+
+      ("assets/wardrobe/polo1.jpg", "Blue Polo", "outerwear", "#D32F2F"),
+      ("assets/wardrobe/polo2.jpg", "Black Polo", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/shirt1.jpg", "Blue Shirt", "outerwear", "#5C6BC0"),
+      ("assets/wardrobe/sweater1.jpg", "Grey Sweater", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/sweater2.jpg", "Green Sweater", "outerwear", "#5C6BC0"),
+
+      ("assets/wardrobe/pants1.jpg", "Golf Pants", "outerwear", "#D32F2F"),
+      ("assets/wardrobe/pants2.jpg", "Dark Jeans", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/pants3.jpg", "Light Jeans", "outerwear", "#5C6BC0"),
+      ("assets/wardrobe/pants4.jpg", "Dark Trousers", "outerwear", "#1E1E1E"),
+
+      ("assets/wardrobe/sneakers1.jpg", "Polo Sneaker", "outerwear", "#D32F2F"),
+      ("assets/wardrobe/boots1.jpg", "Dark Boots", "outerwear", "#1E1E1E"),
+      ("assets/wardrobe/boots2.jpg", "Oslo Boots", "outerwear", "#5C6BC0"),
     ];
 
 
@@ -121,4 +144,20 @@ class WardrobeStore {
 
     await _box.put(id, item.toMap());
   }
+
+  static Future<void> deleteItem(WardrobeItem item) async {
+    // 1) Delete from Hive (assuming you store by item.id as the key)
+    await _box.delete(item.id);
+
+    // 2) Delete the image file too (optional but recommended)
+    try {
+      final f = File(item.imagePath);
+      if (await f.exists()) {
+        await f.delete();
+      }
+    } catch (_) {
+      // ignore file delete errors
+    }
+  }
+
 }

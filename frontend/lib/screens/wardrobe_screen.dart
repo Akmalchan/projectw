@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:hive/hive.dart';
@@ -34,7 +35,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
     super.initState();
     _itemsFuture = WardrobeStore.getByCategory(_selectedCategory);
 
-    // ✅ Live reload: whenever Hive changes, refresh the future so new items show instantly.
+    // ✅ Live reload on Hive changes
     final box = Hive.box("wardrobe_items");
     _watchSub = box.watch().listen((_) {
       if (!mounted) return;
@@ -59,16 +60,38 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Future<void> _refresh() async {
-    // Later: put Gemini sync here:
-    // await WardrobeStore.syncFromGemini();
-
     setState(() {
       _itemsFuture = WardrobeStore.getByCategory(_selectedCategory);
     });
 
-    // wait so RefreshIndicator completes nicely
     await _itemsFuture;
     await Future.delayed(const Duration(milliseconds: 200));
+  }
+
+  void _openItemSheet(WardrobeItem item) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withOpacity(0.25),
+      builder: (_) {
+        final h = MediaQuery.of(context).size.height;
+        return _WardrobeItemSheet(
+          item: item,
+          height: h * 0.78,
+          onDeleted: () {
+            if (!context.mounted) return;
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('"${item.label}" deleted'),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -95,24 +118,19 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
             onRefresh: _refresh,
             color: Colors.black87,
             child: CustomScrollView(
-              // ✅ Important: pull-to-refresh works even if content is short/empty
               physics: const AlwaysScrollableScrollPhysics(
                 parent: BouncingScrollPhysics(),
               ),
               slivers: [
                 const SliverToBoxAdapter(child: SizedBox(height: 16)),
 
-                // Title
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
-                  sliver: SliverToBoxAdapter(
-                    child: _buildTitle(),
-                  ),
+                  sliver: SliverToBoxAdapter(child: _buildTitle()),
                 ),
 
                 const SliverToBoxAdapter(child: SizedBox(height: 18)),
 
-                // Categories
                 SliverToBoxAdapter(
                   child: Padding(
                     padding: const EdgeInsets.only(left: 20),
@@ -122,7 +140,6 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
                 const SliverToBoxAdapter(child: SizedBox(height: 18)),
 
-                // Divider
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   sliver: SliverToBoxAdapter(child: _buildDivider()),
@@ -130,7 +147,6 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
                 const SliverToBoxAdapter(child: SizedBox(height: 18)),
 
-                // Grid
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   sliver: SliverToBoxAdapter(
@@ -146,10 +162,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                         }
 
                         final items = snapshot.data ?? [];
-
-                        if (items.isEmpty) {
-                          return _buildEmptyState();
-                        }
+                        if (items.isEmpty) return _buildEmptyState();
 
                         return _buildGrid(items);
                       },
@@ -212,10 +225,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
           final selected = cat.keyName == _selectedCategory;
           return GestureDetector(
             onTap: () => _selectCategory(cat.keyName),
-            child: _GlassChip(
-              text: cat.label,
-              selected: selected,
-            ),
+            child: _GlassChip(text: cat.label, selected: selected),
           );
         },
       ),
@@ -236,8 +246,8 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       itemBuilder: (context, index) {
         final item = items[index];
         return _WardrobeCard(
-          label: item.label,
-          imagePath: item.imagePath,
+          item: item,
+          onTap: () => _openItemSheet(item),
         );
       },
     );
@@ -254,9 +264,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
         mainAxisSpacing: 14,
         childAspectRatio: 0.78,
       ),
-      itemBuilder: (context, index) {
-        return const _SkeletonCard();
-      },
+      itemBuilder: (context, index) => const _SkeletonCard(),
     );
   }
 
@@ -275,11 +283,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                   color: Colors.white.withOpacity(0.35),
                   borderRadius: BorderRadius.circular(18),
                 ),
-                child: Icon(
-                  Icons.checkroom,
-                  color: Colors.grey.shade700,
-                  size: 28,
-                ),
+                child: Icon(Icons.checkroom, color: Colors.grey.shade700, size: 28),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -315,11 +319,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                   color: Colors.white.withOpacity(0.35),
                   borderRadius: BorderRadius.circular(18),
                 ),
-                child: const Icon(
-                  Icons.error_outline,
-                  color: Colors.black87,
-                  size: 28,
-                ),
+                child: const Icon(Icons.error_outline, color: Colors.black87, size: 28),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -351,10 +351,7 @@ class _GlassChip extends StatelessWidget {
   final String text;
   final bool selected;
 
-  const _GlassChip({
-    required this.text,
-    required this.selected,
-  });
+  const _GlassChip({required this.text, required this.selected});
 
   @override
   Widget build(BuildContext context) {
@@ -376,9 +373,7 @@ class _GlassChip extends StatelessWidget {
           ],
         ),
         border: Border.all(
-          color: selected
-              ? Colors.white.withOpacity(0.65)
-              : Colors.white.withOpacity(0.45),
+          color: selected ? Colors.white.withOpacity(0.65) : Colors.white.withOpacity(0.45),
           width: 1.2,
         ),
         boxShadow: [
@@ -403,58 +398,289 @@ class _GlassChip extends StatelessWidget {
 }
 
 class _WardrobeCard extends StatelessWidget {
-  final String label;
-  final String imagePath;
+  final WardrobeItem item;
+  final VoidCallback onTap;
 
-  const _WardrobeCard({
-    required this.label,
-    required this.imagePath,
-  });
+  const _WardrobeCard({required this.item, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return _GlassPanel(
-      radius: 26,
-      plain: true,
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(20),
-                child: Container(
-                  width: double.infinity,
-                  color: Colors.white.withOpacity(0.22),
-                  child: Image.file(
-                    File(imagePath),
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Center(
-                      child: Icon(
-                        Icons.image_not_supported_outlined,
-                        size: 28,
-                        color: Colors.grey.shade700,
+    return GestureDetector(
+      onTap: onTap,
+      child: _GlassPanel(
+        radius: 26,
+        plain: true,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    width: double.infinity,
+                    color: Colors.white.withOpacity(0.22),
+                    child: Image.file(
+                      File(item.imagePath),
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Center(
+                        child: Icon(Icons.image_not_supported_outlined,
+                            size: 28, color: Colors.grey.shade700),
                       ),
                     ),
                   ),
                 ),
               ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: Colors.black87,
+              const SizedBox(height: 10),
+              Text(
+                item.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
+                ),
               ),
+              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WardrobeItemSheet extends StatelessWidget {
+  final WardrobeItem item;
+  final double height;
+  final VoidCallback onDeleted;
+
+  const _WardrobeItemSheet({
+    required this.item,
+    required this.height,
+    required this.onDeleted,
+  });
+
+  String _prettyCategory(String c) {
+    switch (c) {
+      case "tshirts":
+        return "T-Shirts";
+      case "pants":
+        return "Pants";
+      case "outerwear":
+        return "Outerwear";
+      case "shoes":
+        return "Shoes";
+      default:
+        return c;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).viewPadding.bottom;
+
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: Container(
+        height: height,
+        width: double.infinity,
+        margin: EdgeInsets.zero,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(26),
+            topRight: Radius.circular(26),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.12),
+              blurRadius: 30,
+              offset: const Offset(0, 14),
             ),
-            const SizedBox(height: 4),
           ],
         ),
+        child: ClipRRect(
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(26),
+            topRight: Radius.circular(26),
+          ),
+          child: SafeArea(
+            bottom: true,
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(18, 12, 18, 8 + bottomInset),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 42,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // ✅ This block is what prevents overflows:
+                  // It ALWAYS keeps the image square, but shrinks it if vertical space is tight.
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, c) {
+                        final size = math.min(c.maxWidth, c.maxHeight);
+                        return Center(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: SizedBox(
+                              width: size,
+                              height: size,
+                              child: Container(
+                                color: Colors.grey.shade100,
+                                child: Image.file(
+                                  File(item.imagePath),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => Center(
+                                    child: Icon(
+                                      Icons.image_not_supported_outlined,
+                                      size: 34,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+
+                      },
+                    ),
+                  ),
+
+                  const SizedBox(height: 12),
+
+                  Text(
+                    item.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.6,
+                      color: Color(0xFF1A1A1A),
+                    ),
+                  ),
+
+                  const SizedBox(height: 10),
+
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _metaChip(Icons.category_outlined, _prettyCategory(item.category)),
+                      if (item.dominantColorHex.isNotEmpty)
+                        _metaChip(Icons.palette_outlined, item.dominantColorHex),
+                    ],
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  GestureDetector(
+                    onTap: () async {
+                      final ok = await showDialog<bool>(
+                        context: context,
+                        barrierColor: Colors.black.withOpacity(0.25),
+                        builder: (_) => AlertDialog(
+                          title: const Text("Delete item?"),
+                          content: Text('Delete "${item.label}" from wardrobe?'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text("Cancel"),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text("Delete"),
+                            ),
+                          ],
+                        ),
+                      );
+
+                      if (ok != true) return;
+
+                      await WardrobeStore.deleteItem(item);
+                      onDeleted();
+                    },
+                    child: _GlassPanel(
+                      radius: 22,
+                      plain: false,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(22),
+                          color: Colors.red.withOpacity(0.10),
+                          border: Border.all(
+                            color: Colors.red.withOpacity(0.18),
+                            width: 1.0,
+                          ),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 14),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(Icons.delete_outline, color: Colors.red.shade700),
+                              const SizedBox(width: 8),
+                              Text(
+                                "Delete item",
+                                style: TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.red.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _metaChip(IconData icon, String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(999),
+        color: Colors.grey.shade100,
+        border: Border.all(
+          color: Colors.black.withOpacity(0.08),
+          width: 1.0,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: Colors.black.withOpacity(0.72)),
+          const SizedBox(width: 6),
+          Text(
+            text,
+            style: TextStyle(
+              fontSize: 13.2,
+              fontWeight: FontWeight.w700,
+              color: Colors.black.withOpacity(0.78),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -565,3 +791,4 @@ class _SkeletonCard extends StatelessWidget {
     );
   }
 }
+

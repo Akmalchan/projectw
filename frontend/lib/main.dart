@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:image_background_remover/image_background_remover.dart';
 import 'data/wardrobe_store.dart';
 
 import 'screens/home_screen.dart';
@@ -26,26 +27,25 @@ Future<void> main() async {
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.dark,
-
       systemNavigationBarColor: kAppBg,
       systemNavigationBarIconBrightness: Brightness.dark,
       systemNavigationBarDividerColor: kAppBg,
-
-      // Some devices apply auto-contrast/tint. This helps keep it looking “normal”.
       systemNavigationBarContrastEnforced: true,
     ),
   );
 
-  WidgetsFlutterBinding.ensureInitialized();
   cameras = await availableCameras();
 
   await Hive.initFlutter();
   await WardrobeStore.init();
   await WardrobeStore.seedIfNeeded();
 
+  // ✅ add this line
+  await BackgroundRemover.instance.initializeOrt();
 
   runApp(const AIWardrobeApp());
 }
+
 
 class AIWardrobeApp extends StatelessWidget {
   const AIWardrobeApp({super.key});
