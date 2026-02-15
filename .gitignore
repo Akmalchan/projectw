@@ -1,0 +1,97 @@
+# =========================
+# Secrets / env
+# =========================
+**/.env
+**/.env.*
+!.env.example
+!backend/.env.example
+
+# =========================
+# OS / Editor / IDE
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# =========================
+# Python (backend)
+# =========================
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Backend runtime folders (in case you add local storage)
+backend/uploads/
+backend/generated/
+backend/tmp/
+
+# Local test images (don’t commit random test files)
+backend/img.png
+backend/*.png
+backend/*.jpg
+backend/*.jpeg
+backend/*.webp
+
+# Docker overrides / local-only compose
+docker-compose.override.yml
+backend/docker-compose.override.yml
+
+# If you ever bind-mount these (not used by named volumes, but safe)
+**/mongo_data/
+**/vectorai_data/
+**/volumes/
+
+# =========================
+# Flutter / Dart (frontend)
+# =========================
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# iOS generated
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/App.framework
+
+# Android generated build outputs
+**/android/app/debug
+**/android/app/profile
+**/android/app/release
+
+# Web build output (if you build Flutter web)
+**/web/build/
+
+# =========================
+# KEEP Actian wheel tracked
+# =========================
+# Do NOT ignore backend/wheels/ or *.whl because your Dockerfile installs it.
+!backend/wheels/
+!backend/wheels/*.whl
+
+
