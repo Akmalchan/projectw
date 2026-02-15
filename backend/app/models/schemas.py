@@ -1,41 +1,83 @@
+# app/models/schemas.py
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, constr
-from typing import Optional, List, Literal
+from enum import Enum
+from typing import Any, Dict, List, Literal, Optional
 
-Category = Literal[
-    "all", "tshirts", "pants", "outerwear", "shoes", "accessories", "unknown"
-]
+from pydantic import BaseModel, Field
 
-HexColor = constr(
-    pattern=r"^#[0-9A-Fa-f]{6}$",
-    strict=True,
-)
 
-SafeLabel = constr(
-    min_length=1,
-    max_length=80,
-    strict=True,
-)
+class Category(str, Enum):
+    # LOCKED ENUM (frontend contract)
+    outerwear = "outerwear"
+    top = "top"
+    bottom = "bottom"
+    shoes = "shoes"
+    accessory = "accessory"
 
-ImageBase64 = constr(
-    min_length=1,
-    max_length=8_000_000,
-    strict=True,
-)
 
-class WardrobeItemOut(BaseModel):
-    id: Optional[str] = None
-    label: SafeLabel = Field(..., description="Human-friendly label")
-    category: Category = Field(..., description="Normalized category enum")
-    dominantColorHex: HexColor = Field(..., description="Format: #RRGGBB")
-    imageBase64: ImageBase64 = Field(..., description="Base64-encoded PNG/JPG bytes")
+class WardrobeItem(BaseModel):
+    # Stable server ID, used as primary key client-side
+    itemId: str
 
-class WardrobeItemsResponse(BaseModel):
-    items: List[WardrobeItemOut]
+    userId: str
 
-class WardrobeIngestItemResult(BaseModel):
-    id: str = Field(..., description="Mongo item id")
+    # Locked taxonomy
+    category: Category
 
-class WardrobeIngestItemsResponse(BaseModel):
-    items: List[WardrobeIngestItemResult]
+    # Freeform label (e.g. "denim jacket")
+    type: str
+
+    # Optional metadata from Gemini
+    colors: List[str] = Field(default_factory=list)          # hex or simple color names
+    material: Optional[str] = None
+    pattern: Optional[str] = None
+    season: Optional[str] = None
+    fit: Optional[str] = None
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
+    # Media: stable downloadable URLs OR fileIds (we provide both)
+    imageFileId: str
+    thumbFileId: str
+    imageUrl: str
+    thumbUrl: str
+
+    # Sync fields
+    version: int
+    createdAt: str
+    updatedAt: str
+    deletedAt: Optional[str] = None
+
+
+class WardrobeIngestResponse(BaseModel):
+    cursor: str
+    items: List[WardrobeItem]
+
+
+class SyncUpsertOp(BaseModel):
+    op: Literal["upsert"] = "upsert"
+    itemId: str
+    data: WardrobeItem
+
+
+class SyncDeleteOp(BaseModel):
+    op: Literal["delete"] = "delete"
+    itemId: str
+    deletedAt: str
+
+
+SyncOp = SyncUpsertOp | SyncDeleteOp
+
+
+class WardrobeSyncResponse(BaseModel):
+    nextCursor: str
+    ops: List[SyncOp]
+
+
+# NEW: reindex response
+class WardrobeReindexResponse(BaseModel):
+    userId: str
+    mongoItems: int
+    upserted: int
+    skipped: int
+    includeDeleted: bool

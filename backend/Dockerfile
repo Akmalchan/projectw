@@ -1,29 +1,29 @@
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# System deps: pillow robustness + curl for debugging + build tools if wheels missing
+# Minimal runtime deps (TLS); add others only if you truly need them
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libjpeg62-turbo-dev \
-    zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Install Python deps first for better layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip \
+  && pip install --no-cache-dir -r requirements.txt
 
-# Actian Cortex wheel
-COPY wheels/actiancortex-0.1.0b1-py3-none-any.whl /app/wheels/
-RUN pip install --no-cache-dir /app/wheels/actiancortex-0.1.0b1-py3-none-any.whl
+# Install Actian Cortex client from your wheel path
+COPY wheels/ /tmp/wheels/
+RUN pip install --no-cache-dir /tmp/wheels/*.whl
 
-# Copy app code
-COPY app /app/app
 
-# Run as non-root
-RUN useradd -m appuser && chown -R appuser:appuser /app
-USER appuser
+# Copy the application code
+COPY . .
 
+EXPOSE 8000
+
+# Change if your entrypoint differs
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

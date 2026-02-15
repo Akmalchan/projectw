@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     cortex_server: str = "localhost:50051"
     vector_collection: str = "wardrobe_items"
     vector_dim: int = 256
+    vector_recreate: bool = False
 
     # CORS
     cors_origins: str = "*"

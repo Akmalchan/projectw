@@ -9,6 +9,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 20
+    # Optional but recommended: persist VectorAI data
+    # volumes:
+    #   - vectorai_data:/data
 
   mongo:
     image: mongo:7
@@ -40,3 +43,4 @@ services:
 
 volumes:
   mongo_data:
+  # vectorai_data:
