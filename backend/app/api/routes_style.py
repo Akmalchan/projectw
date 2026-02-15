@@ -57,7 +57,7 @@ def _encode_jpeg(img: Image.Image, *, quality: int = 90) -> bytes:
 
 def _crop_normalized_box(image_bytes: bytes, box: Dict[str, Any]) -> bytes:
     """
-    box: {"x":0..1, "y":0..1, "w":0..1, "h":0..1}
+    box: {"x":0.1, "y":0.1, "w":0.1, "h":0.1}
     Returns cropped JPEG bytes.
     """
     with Image.open(io.BytesIO(image_bytes)) as im:
@@ -90,48 +90,88 @@ def _crop_normalized_box(image_bytes: bytes, box: Dict[str, Any]) -> bytes:
 
 
 def _next_counter(name: str) -> int:
-    doc = counters_collection().find_one_and_update(
+    """
+    Atomic counter in Mongo.
+    """
+    res = counters_collection().find_one_and_update(
         {"_id": name},
         {"$inc": {"seq": 1}},
         upsert=True,
         return_document=ReturnDocument.AFTER,
     )
-    return int((doc or {}).get("seq", 0))
-
-
-def _new_item_id() -> str:
-    n = _next_counter("wardrobe_item_id")
-    return f"item_{n}"
-
-
-def _new_change_seq() -> int:
-    return _next_counter("wardrobe_change_seq")
-
-
-def _coerce_category(raw: Any) -> str:
-    v = str(raw or "").strip().lower()
-    allowed = {c.value for c in Category}
-    return v if v in allowed else "top"
-
-
-def _coerce_colors(raw: Any) -> List[str]:
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        return [raw.strip()] if raw.strip() else []
-    if isinstance(raw, list):
-        out = []
-        for c in raw:
-            s = str(c).strip()
-            if s:
-                out.append(s)
-        return out
-    return []
+    return int(res["seq"])
 
 
 # -------------------------
-# Gemini
+# Gemini calls
 # -------------------------
+
+async def _gemini_studio_product_photo(
+    *,
+    image_bytes: bytes,
+    mime_type: str = "image/jpeg",
+) -> bytes:
+    """
+    Uses Gemini image model to "re-render" the garment on a pure white studio background.
+
+    Returns: image bytes (often PNG; sometimes JPEG). Caller should detect magic bytes.
+    """
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+
+    model = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image").strip() or "gemini-2.5-flash-image"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    params = {"key": api_key}
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    prompt = (
+        "You are an expert ecommerce product photographer and retoucher.\n"
+        "TASK: Create a clean studio product photo of the SAME garment shown in the input image.\n"
+        "STRICT RULES:\n"
+        "- Preserve the garment EXACTLY (same colors, patterns, logos, text, graphics). Do not invent details.\n"
+        "- Do not change garment shape, neckline, sleeve length, or fit.\n"
+        "- Remove the background completely.\n"
+        "- Place the garment centered on a pure white #FFFFFF seamless studio background.\n"
+        "- Lighting: soft even studio lighting, minimal shadows (very subtle grounding shadow ok).\n"
+        "- Output: ONE image only.\n"
+        "Return an IMAGE output (not text)."
+    )
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": b64}},
+                ],
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["IMAGE"],
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        resp = await client.post(url, params=params, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except Exception:
+        raise RuntimeError(f"Gemini returned unexpected response: {data}")
+
+    for p in parts:
+        inline = p.get("inline_data") or p.get("inlineData")
+        if inline and inline.get("data"):
+            return base64.b64decode(inline["data"])
+
+    raise RuntimeError(f"Gemini returned no image parts. Response parts={parts}")
+
 
 async def _gemini_parse_person_outfit(
     *,
@@ -161,7 +201,7 @@ async def _gemini_parse_person_outfit(
             "{\n"
             '  "outfit": {\n'
             '    "items": [\n'
-            '      {\n'
+            "      {\n"
             '        "category":"outerwear|top|bottom|shoes|accessory",\n'
             '        "type":"string",\n'
             '        "colors":["string"],\n'
@@ -184,7 +224,7 @@ async def _gemini_parse_person_outfit(
             "- box should tightly cover the visible garment region\n"
             "- If you are not confident about a box, omit the item entirely (do not hallucinate boxes)\n"
             "- If barefoot, set barefoot=true and do NOT add a shoes item.\n"
-            "- If shoes visible, set barefoot=false and include a shoes item.\n"
+            "- If shoes are visible, set barefoot=false and include a shoes item.\n"
             "- If uncertain about material/pattern, use null.\n"
         )
     else:
@@ -206,10 +246,10 @@ async def _gemini_parse_person_outfit(
             "}\n"
             "Rules:\n"
             "- category must be exactly one of: outerwear, top, bottom, shoes, accessory\n"
-            "- colors per item: 1–3 DOMINANT colors only\n"
+            "- colors per item: provide 1–3 DOMINANT colors only (simple names like black, white, grey, blue)\n"
             "- overall_palette: 3–6 colors max\n"
-            "- If barefoot, set barefoot=true and do NOT add a shoes item.\n"
-            "- If shoes visible, set barefoot=false and include a shoes item.\n"
+            "- If the person is barefoot, set barefoot=true and do NOT add a shoes item.\n"
+            "- If shoes are visible, set barefoot=false and include a shoes item.\n"
             "- If uncertain about material/pattern, use null.\n"
         )
 
@@ -217,6 +257,7 @@ async def _gemini_parse_person_outfit(
     user_text = instruction + ("\nUser prompt: " + user_prompt if user_prompt else "")
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
+
     payload = {
         "contents": [
             {
@@ -255,7 +296,7 @@ async def _gemini_parse_person_outfit(
 
 
 # -------------------------
-# existing endpoints
+# endpoints
 # -------------------------
 
 @router.post("/request")
@@ -395,7 +436,7 @@ async def parse_person(
 
 
 # -------------------------
-# NEW: parse -> crop -> ingest -> vector index
+# NEW: parse -> crop -> (optional studioify) -> ingest -> vector index
 # -------------------------
 
 @router.post("/parse-and-ingest-crops")
@@ -406,15 +447,17 @@ async def parse_and_ingest_crops(
     personImage: UploadFile = File(...),
     saveRequest: bool = Form(True),
     maxItems: int = Form(10),
+    studioify: bool = Form(True),
 ):
     """
     1) Gemini parse WITH boxes
     2) crop each item from person image
-    3) store crops in GridFS
-    4) insert wardrobe docs into Mongo
-    5) upsert into VectorAI
+    3) optionally run Gemini image model to "studioify" each crop
+    4) store crops in GridFS
+    5) insert wardrobe docs into Mongo
+    6) upsert into VectorAI
 
-    Returns: { requestId, createdItems, parsed }
+    Returns: { requestId, parsed, createdItems, createdCount }
     """
     user_id = (userId or "").strip()
     if not user_id:
@@ -498,9 +541,10 @@ async def parse_and_ingest_crops(
         res = db.style_requests.insert_one(req_doc)
         request_id = str(res.inserted_id)
 
-    created: List[WardrobeItem] = []
-    vec = get_vector_ai()
     base = _base_url(request)
+    vec = get_vector_ai()
+
+    created: List[WardrobeItem] = []
 
     for it in items:
         if not isinstance(it, dict):
@@ -508,93 +552,129 @@ async def parse_and_ingest_crops(
 
         box = it.get("box")
         if not isinstance(box, dict):
-            # instruction says omit items if no box; still guard here
+            # no box -> cannot crop
             continue
 
-        # Crop
+        category = (it.get("category") or "").strip().lower()
+        typ = (it.get("type") or "").strip()
+        colors = it.get("colors") or []
+        pattern = it.get("pattern")
+        material = it.get("material")
+
+        # Validate category against schema enum
+        try:
+            cat_enum = Category(category)
+        except Exception:
+            continue
+
+        # Crop from original person image
         try:
             crop_jpeg = _crop_normalized_box(img_bytes, box)
         except Exception:
             continue
 
-        # Store crop + thumb
-        crop_file_id = store_image_bytes(
-            crop_jpeg,
-            filename="garment.jpg",
-            content_type="image/jpeg",
+        # Optionally "studioify" via Gemini image model
+        final_bytes = crop_jpeg
+        final_name = "garment_crop.jpg"
+        final_mime = "image/jpeg"
+
+        if bool(studioify):
+            try:
+                gemini_img = await _gemini_studio_product_photo(
+                    image_bytes=crop_jpeg,
+                    mime_type="image/jpeg",
+                )
+
+                # detect if JPEG magic bytes; otherwise treat as PNG
+                if gemini_img[:3] == b"\xff\xd8\xff":
+                    final_bytes = gemini_img
+                    final_name = "garment_studio.jpg"
+                    final_mime = "image/jpeg"
+                else:
+                    final_bytes = gemini_img
+                    final_name = "garment_studio.png"
+                    final_mime = "image/png"
+            except Exception:
+                # fallback to raw crop
+                final_bytes = crop_jpeg
+                final_name = "garment_crop.jpg"
+                final_mime = "image/jpeg"
+
+        # Store final crop + thumbnail in GridFS
+        image_file_id = store_image_bytes(
+            final_bytes,
+            filename=final_name,
+            content_type=final_mime,
         )
-        thumb_bytes = _make_thumb(crop_jpeg, max_size=512)
+        thumb_bytes = _make_thumb(final_bytes, max_size=512)
         thumb_file_id = store_image_bytes(
             thumb_bytes,
             filename="garment_thumb.jpg",
             content_type="image/jpeg",
         )
 
-        # Build wardrobe doc
-        item_id = _new_item_id()
-        change_seq = _new_change_seq()
-
-        cat = _coerce_category(it.get("category"))
-        typ = str(it.get("type") or "").strip() or "unknown garment"
-        colors = _coerce_colors(it.get("colors"))
-        material = it.get("material")
-        pattern = it.get("pattern")
-
-        extra: Dict[str, Any] = {
-            "source": "gemini_crop",
-            "styleRequestId": request_id,
-            "box": box,
-        }
+        # Create Mongo garment doc
+        item_num = _next_counter("garments")
+        item_id = f"item_{item_num}"
 
         doc = {
             "_id": item_id,
+            "itemId": item_id,
             "userId": user_id,
-            "category": cat,
+            "category": cat_enum.value,
             "type": typ,
             "colors": colors,
-            "material": str(material).strip() if material else None,
-            "pattern": str(pattern).strip() if pattern else None,
+            "material": material,
+            "pattern": pattern,
             "season": None,
             "fit": None,
-            "extra": extra,
-            "imageFileId": str(crop_file_id),
+            "extra": {
+                "source": "gemini_crop",
+                "styleRequestId": request_id,
+                "box": box,
+                "studioify": bool(studioify),
+            },
+            "imageFileId": str(image_file_id),
             "thumbFileId": str(thumb_file_id),
             "version": 1,
             "createdAt": now,
             "updatedAt": now,
             "deletedAt": None,
-            "changeSeq": change_seq,
         }
 
         garments_collection().insert_one(doc)
 
-        # VectorAI upsert
+        # Build urls
+        image_url = f"{base}/wardrobe/media/{image_file_id}"
+        thumb_url = f"{base}/wardrobe/media/{thumb_file_id}"
+
+        # Upsert into VectorAI
         text = garment_doc_to_text(doc)
         payload = garment_doc_to_payload(doc)
         vec.upsert(item_id=item_id, payload=payload, text=text)
 
-        # Response model
-        wi = WardrobeItem(
-            itemId=item_id,
-            userId=user_id,
-            category=Category(cat),
-            type=typ,
-            colors=colors,
-            material=str(material).strip() if material else None,
-            pattern=str(pattern).strip() if pattern else None,
-            season=None,
-            fit=None,
-            extra=extra,
-            imageFileId=str(crop_file_id),
-            thumbFileId=str(thumb_file_id),
-            imageUrl=f"{base}/wardrobe/media/{crop_file_id}",
-            thumbUrl=f"{base}/wardrobe/media/{thumb_file_id}",
-            version=1,
-            createdAt=now,
-            updatedAt=now,
-            deletedAt=None,
+        created.append(
+            WardrobeItem(
+                itemId=item_id,
+                userId=user_id,
+                category=cat_enum,
+                type=typ,
+                colors=colors,
+                material=material,
+                pattern=pattern,
+                season=None,
+                fit=None,
+                extra=doc.get("extra"),
+                imageFileId=str(image_file_id),
+                thumbFileId=str(thumb_file_id),
+                imageUrl=image_url,
+                thumbUrl=thumb_url,
+                version=1,
+                createdAt=now,
+                updatedAt=now,
+                deletedAt=None,
+            )
         )
-        created.append(wi)
 
     return {
         "requestId": request_id,
